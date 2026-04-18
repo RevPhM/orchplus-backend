@@ -21,7 +21,11 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # ---------- AGENTS ----------
 
 def planner_agent(task):
-    db_data = supabase.table("steps").select("step, result").limit(5).execute().data
+    db_data = supabase.table("steps").select("step, result").ilike("step", f"%{task}%").limit(5).execute().data
+
+    # fallback si rien trouvé
+    if not db_data:
+        db_data = supabase.table("steps").select("step, result").limit(5).execute().data
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -101,7 +105,18 @@ def run_pipeline(task):
 
 
 def save_step(step, result):
-    # éviter les doublons simples
+    # compter nombre total de lignes
+    count = supabase.table("steps").select("id", count="exact").execute().count
+
+    # si trop de lignes → supprimer les plus anciennes
+    if count and count > 100:
+        old = supabase.table("steps").select("id").order("created_at", desc=False).limit(10).execute().data
+        ids = [row["id"] for row in old]
+
+        if ids:
+            supabase.table("steps").delete().in_("id", ids).execute()
+
+    # éviter doublons simples
     existing = supabase.table("steps").select("id").eq("step", step).limit(1).execute().data
 
     if not existing:
