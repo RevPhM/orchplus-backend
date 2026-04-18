@@ -1,4 +1,6 @@
 from fastapi import FastAPI
+from openai import OpenAI
+import os
 
 app = FastAPI()
 
@@ -6,24 +8,23 @@ app = FastAPI()
 def read_root():
     return {"status": "ok"}
 
-from openai import OpenAI
-
-import os
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+def run_pipeline(task):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {"role": "system", "content": "You are a helpful business assistant."},
+            {"role": "user", "content": task}
+        ]
+    )
+    return response.choices[0].message.content
 
 @app.post("/run")
 def run(task: dict):
     prompt = task.get("task")
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are a helpful business assistant."},
-            {"role": "user", "content": prompt}
-        ]
-    )
-
-    output = response.choices[0].message.content
+    output = run_pipeline(prompt)
 
     return {
         "results": [
