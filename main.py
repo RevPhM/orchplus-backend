@@ -52,19 +52,81 @@ Return ONLY a JSON array of strings.
         return [task]
 
 
+
+
+
+
 def executor_agent(step):
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "search_memory",
+                "description": "Search previous steps in Supabase",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"}
+                    },
+                    "required": ["query"]
+                }
+            }
+        }
+    ]
+
+
+
+
+    
+    def search_memory(query):
+        data = supabase.table("steps") \
+            .select("step, result") \
+            .ilike("step", f"%{query}%") \
+            .limit(5) \
+            .execute().data
+        return json.dumps(data)
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {
-                "role": "system",
-                "content": "Execute this step clearly and concisely."
-            },
+            {"role": "system", "content": "You are an autonomous agent. Use tools if needed."},
             {"role": "user", "content": step}
-        ]
+        ],
+        tools=tools,
+        tool_choice="auto"
     )
 
-    return response.choices[0].message.content
+    message = response.choices[0].message
+
+    # --- TOOL CALL ---
+    if message.tool_calls:
+        tool_call = message.tool_calls[0]
+        args = json.loads(tool_call.function.arguments)
+
+        if tool_call.function.name == "search_memory":
+            tool_result = search_memory(args["query"])
+
+        # re-call model with tool result
+        second_response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an autonomous agent."},
+                {"role": "user", "content": step},
+                message,
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": tool_result
+                }
+            ]
+        )
+
+        return second_response.choices[0].message.content
+
+    return message.content
+
+
+
 
 
 def reviewer_agent(results):
