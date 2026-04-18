@@ -12,6 +12,17 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = FastAPI()
 
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # pour test uniquement
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 @app.get("/")
 def read_root():
     return {"status": "ok"}
@@ -107,12 +118,30 @@ def executor_agent(step):
 
     response = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": "You are an autonomous agent. ALWAYS use the search_memory tool before answering."},
-            {"role": "user", "content": step}
-        ],
+messages=[
+    {
+        "role": "system",
+        "content": """
+You are an autonomous agent.
+
+You have access to tools:
+- search_memory: retrieve past knowledge
+- save_memory: store useful results
+
+Decision rules:
+1. Think first.
+2. Use search_memory only if past knowledge could help.
+3. Use save_memory only if the result is reusable in the future.
+4. Do not use tools unnecessarily.
+5. Always produce a clear final answer.
+
+Act efficiently.
+"""
+    },
+    {"role": "user", "content": step}
+],
         tools=tools,
-        tool_choice={"type": "function", "function": {"name": "search_memory"}}
+        tool_choice="auto"
     )
 
     if not response.choices or not response.choices[0].message:
@@ -121,28 +150,35 @@ def executor_agent(step):
     message = response.choices[0].message
 
     if hasattr(message, "tool_calls") and message.tool_calls:
-        tool_call = message.tool_calls[0]
-        args = json.loads(tool_call.function.arguments or "{}")
+        tool_results = []
 
-        tool_result = ""
+        for tool_call in message.tool_calls:
+            args = json.loads(tool_call.function.arguments or "{}")
 
-        if tool_call.function.name == "search_memory":
-            tool_result = search_memory(args.get("query", ""))
+            if tool_call.function.name == "search_memory":
+                result = search_memory(args.get("query", ""))
+                tool_results.append({
+                    "id": tool_call.id,
+                    "result": result
+                })
 
         second_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Use the tool result as primary context. Then produce a final answer AND call save_memory with the step and result."},
+                {"role": "system", "content": "Use the tool results as context. Produce a clear final answer. Optionally store useful knowledge using save_memory."},
                 {"role": "user", "content": step},
                 message,
-                {
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": tool_result
-                }
+                *[
+                    {
+                        "role": "tool",
+                        "tool_call_id": tr["id"],
+                        "content": tr["result"]
+                    }
+                    for tr in tool_results
+                ]
             ],
-                tools=tools,
-    tool_choice="auto"
+            tools=tools,
+            tool_choice="auto"
         )
 
         if not second_response.choices or not second_response.choices[0].message:
@@ -150,7 +186,6 @@ def executor_agent(step):
 
         second_message = second_response.choices[0].message
 
-        # --- HANDLE SECOND TOOL CALL ---
         if hasattr(second_message, "tool_calls") and second_message.tool_calls:
             tool_call = second_message.tool_calls[0]
             args = json.loads(tool_call.function.arguments or "{}")
