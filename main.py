@@ -56,6 +56,7 @@ Return ONLY a JSON array of strings.
 
 
 
+
 def executor_agent(step):
     tools = [
         {
@@ -71,6 +72,21 @@ def executor_agent(step):
                     "required": ["query"]
                 }
             }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "save_memory",
+                "description": "Save a useful result into memory",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "step": {"type": "string"},
+                        "result": {"type": "string"}
+                    },
+                    "required": ["step", "result"]
+                }
+            }
         }
     ]
 
@@ -82,14 +98,21 @@ def executor_agent(step):
             .execute().data
         return json.dumps(data)
 
+    def save_memory(step, result):
+        supabase.table("steps").insert({
+            "step": step,
+            "result": result
+        }).execute()
+        return "saved"
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are an autonomous agent. Use tools if needed."},
+            {"role": "system", "content": "You are an autonomous agent. ALWAYS use the search_memory tool before answering."},
             {"role": "user", "content": step}
         ],
         tools=tools,
-        tool_choice="auto"
+        tool_choice={"type": "function", "function": {"name": "search_memory"}}
     )
 
     if not response.choices or not response.choices[0].message:
@@ -97,7 +120,6 @@ def executor_agent(step):
 
     message = response.choices[0].message
 
-    # --- TOOL CALL ---
     if hasattr(message, "tool_calls") and message.tool_calls:
         tool_call = message.tool_calls[0]
         args = json.loads(tool_call.function.arguments or "{}")
@@ -110,7 +132,7 @@ def executor_agent(step):
         second_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are an autonomous agent."},
+                {"role": "system", "content": "Use the tool result as primary context. Then produce a final answer AND call save_memory with the step and result."},
                 {"role": "user", "content": step},
                 message,
                 {
@@ -118,16 +140,30 @@ def executor_agent(step):
                     "tool_call_id": tool_call.id,
                     "content": tool_result
                 }
-            ]
+            ],
+                tools=tools,
+    tool_choice="auto"
         )
 
         if not second_response.choices or not second_response.choices[0].message:
             return "Error: empty second response"
 
-        return second_response.choices[0].message.content
+        second_message = second_response.choices[0].message
+
+        # --- HANDLE SECOND TOOL CALL ---
+        if hasattr(second_message, "tool_calls") and second_message.tool_calls:
+            tool_call = second_message.tool_calls[0]
+            args = json.loads(tool_call.function.arguments or "{}")
+
+            if tool_call.function.name == "save_memory":
+                save_memory(
+                    args.get("step", step),
+                    args.get("result", "")
+                )
+
+        return second_message.content or "No content returned"
 
     return message.content or "No content returned"
-
 
 
 
@@ -160,7 +196,8 @@ def run_pipeline(task):
         result = executor_agent(step)
 
         # sauvegarde chaque étape
-        save_step(step, result)
+        if result and result != "Memory saved":
+            save_step(step, result)
 
         results.append(result)
 
