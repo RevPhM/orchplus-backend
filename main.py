@@ -9,6 +9,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+
 app = FastAPI()
 
 @app.get("/")
@@ -86,6 +87,11 @@ def run_pipeline(task):
 
 
 # ---------- ENDPOINT ----------
+
+@app.get("/test-supabase")
+def test_supabase():
+    response = supabase.table("steps").select("*").limit(5).execute()
+    return response.data
 
 @app.post("/run")
 def run(task: dict):
