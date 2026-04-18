@@ -23,7 +23,6 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 def planner_agent(task):
     db_data = supabase.table("steps").select("step, result").ilike("step", f"%{task}%").limit(5).execute().data
 
-    # fallback si rien trouvé
     if not db_data:
         db_data = supabase.table("steps").select("step, result").limit(5).execute().data
 
@@ -47,11 +46,12 @@ Return ONLY a JSON array of strings.
     )
 
     try:
+        if not response.choices or not response.choices[0].message or not response.choices[0].message.content:
+            return [task]
+
         return json.loads(response.choices[0].message.content)
     except:
         return [task]
-
-
 
 
 
@@ -74,10 +74,6 @@ def executor_agent(step):
         }
     ]
 
-
-
-
-    
     def search_memory(query):
         data = supabase.table("steps") \
             .select("step, result") \
@@ -96,17 +92,21 @@ def executor_agent(step):
         tool_choice="auto"
     )
 
+    if not response.choices or not response.choices[0].message:
+        return "Error: empty response from model"
+
     message = response.choices[0].message
 
     # --- TOOL CALL ---
-    if message.tool_calls:
+    if hasattr(message, "tool_calls") and message.tool_calls:
         tool_call = message.tool_calls[0]
-        args = json.loads(tool_call.function.arguments)
+        args = json.loads(tool_call.function.arguments or "{}")
+
+        tool_result = ""
 
         if tool_call.function.name == "search_memory":
-            tool_result = search_memory(args["query"])
+            tool_result = search_memory(args.get("query", ""))
 
-        # re-call model with tool result
         second_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
@@ -121,9 +121,12 @@ def executor_agent(step):
             ]
         )
 
+        if not second_response.choices or not second_response.choices[0].message:
+            return "Error: empty second response"
+
         return second_response.choices[0].message.content
 
-    return message.content
+    return message.content or "No content returned"
 
 
 
