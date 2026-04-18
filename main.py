@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from openai import OpenAI
 import os
+import json
 
 app = FastAPI()
 
@@ -10,24 +11,87 @@ def read_root():
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
-def run_pipeline(task):
+# ---------- AGENTS ----------
+
+def planner_agent(task):
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "You are a helpful business assistant."},
+            {
+                "role": "system",
+                "content": "Break the task into 3-5 clear actionable steps. Return ONLY a JSON array of strings."
+            },
             {"role": "user", "content": task}
         ]
     )
+
+    try:
+        return json.loads(response.choices[0].message.content)
+    except:
+        return [task]
+
+
+def executor_agent(step):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "Execute this step clearly and concisely."
+            },
+            {"role": "user", "content": step}
+        ]
+    )
+
     return response.choices[0].message.content
+
+
+def reviewer_agent(results):
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": "Combine and improve the following results into one clear final answer."
+            },
+            {
+                "role": "user",
+                "content": "\n".join(results)
+            }
+        ]
+    )
+
+    return response.choices[0].message.content
+
+
+# ---------- ORCHESTRATOR ----------
+
+def run_pipeline(task):
+    steps = planner_agent(task)
+
+    results = []
+    for step in steps:
+        result = executor_agent(step)
+        results.append(result)
+
+    final = reviewer_agent(results)
+
+    return final
+
+
+# ---------- ENDPOINT ----------
 
 @app.post("/run")
 def run(task: dict):
     prompt = task.get("task")
 
+    if not prompt:
+        return {"error": "No task provided"}
+
     output = run_pipeline(prompt)
 
     return {
         "results": [
-            {"step": "AI Response", "result": output}
+            {"step": "Final Answer", "result": output}
         ]
     }
