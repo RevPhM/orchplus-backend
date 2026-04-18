@@ -21,12 +21,22 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 # ---------- AGENTS ----------
 
 def planner_agent(task):
+    db_data = supabase.table("steps").select("step, result").limit(5).execute().data
+
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
-                "content": "Break the task into 3-5 clear actionable steps. Return ONLY a JSON array of strings."
+                "content": f"""
+You are a planner.
+
+You have access to previous knowledge:
+{db_data}
+
+Break the task into 3-5 steps using this knowledge if relevant.
+Return ONLY a JSON array of strings.
+"""
             },
             {"role": "user", "content": task}
         ]
@@ -79,11 +89,27 @@ def run_pipeline(task):
     results = []
     for step in steps:
         result = executor_agent(step)
+
+        # sauvegarde chaque étape
+        save_step(step, result)
+
         results.append(result)
 
     final = reviewer_agent(results)
 
     return final
+
+
+def save_step(step, result):
+    # éviter les doublons simples
+    existing = supabase.table("steps").select("id").eq("step", step).limit(1).execute().data
+
+    if not existing:
+        supabase.table("steps").insert({
+            "step": step,
+            "result": result
+        }).execute()
+
 
 
 # ---------- ENDPOINT ----------
